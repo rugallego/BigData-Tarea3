@@ -1,4 +1,6 @@
-# BigData-Tarea3
+#UNAD
+## Ruben Dario Gallego Tellez
+## BigData Tarea3
 # Pipeline de Procesamiento Batch con PySpark: Análisis del PIB en Colombia
 
 Este repositorio contiene la solución en batch para la ingesta, limpieza, estandarización y análisis exploratorio de datos (EDA) del Producto Interno Bruto (PIB) departamental y sectorial en Colombia mediante **Apache Spark (PySpark)** y **Hadoop HDFS**.
