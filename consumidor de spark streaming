@@ -1,0 +1,58 @@
+from pyspark.sql import SparkSession
+from pyspark.sql.functions import from_json, col, window, sum as _sum, count as _count
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, IntegerType, TimestampType
+
+spark = SparkSession.builder \
+    .appName("PIB_RealTime_Streaming") \
+    .config("spark.jars.packages", "org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0") \
+    .config("spark.sql.shuffle.partitions", "2") \
+    .getOrCreate()
+
+spark.sparkContext.setLogLevel("WARN")
+
+# Definición del esquema estricto correspondiente al evento JSON
+schema_pib = StructType([
+    StructField("id_reporte", StringType(), True),
+    StructField("anio", IntegerType(), True),
+    StructField("departamento", StringType(), True),
+    StructField("sector", StringType(), True),
+    StructField("valor_pib", DoubleType(), True),
+    StructField("timestamp", TimestampType(), True)
+])
+
+# Lectura del Stream desde Kafka
+kafka_stream = spark.readStream \
+    .format("kafka") \
+    .option("kafka.bootstrap.servers", "localhost:9092") \
+    .option("subscribe", "pib-departamental-stream") \
+    .option("startingOffsets", "latest") \
+    .load()
+
+# Deserialización del payload JSON
+parsed_stream = kafka_stream \
+    .selectExpr("CAST(value AS STRING) as json_payload") \
+    .select(from_json(col("json_payload"), schema_pib).alias("data")) \
+    .select("data.*")
+
+# Agregación en ventana móvil de 1 minuto agrupada por departamento
+streaming_aggs = parsed_stream \
+    .withWatermark("timestamp", "10 seconds") \
+    .groupBy(
+        window(col("timestamp"), "40 seconds"),
+        col("departamento")
+    ) \
+    .agg(
+        _count("id_reporte").alias("total_reportes"),
+        _sum("valor_pib").alias("pib_acumulado_stream")
+    )
+
+# Salida continua a la consola en modo Complete
+query = streaming_aggs.writeStream \
+    .outputMode("complete") \
+    .format("console") \
+    .trigger(processingTime="5 seconds") \
+    .option("numRows", 5) \
+    .option("truncate", "false") \
+    .start()
+
+query.awaitTermination()
