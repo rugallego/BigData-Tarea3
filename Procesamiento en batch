@@ -1,0 +1,75 @@
+#Importamos librerías necesarias
+from pyspark.sql import SparkSession, functions as F
+from pyspark.sql.functions import format_number, concat, col, trim, coalesce, lit, sum as _sum, count as _count, round as _round
+
+# Inicializa la sesión de Spark
+spark = SparkSession.builder \
+    .appName("Tarea32") \
+    .getOrCreate()
+
+# Define la ruta del archivo .csv en HDFS
+file_path = 'hdfs://localhost:9000/Tarea32/query.csv'
+
+# Lee el archivo .csv
+df = spark.read.format('csv').option('header','true').option('inferSchema', 'true').load(file_path)
+
+#imprimimos el esquema
+print("\n--- ESQUEMA DEL ARCHIVO CSV ---")
+df.printSchema()
+
+#Limpieza y estandarización del esquema de columnas
+print("\n--- LIMPIEZA Y ESTANDARIZACION DEL ESQUEMA DE COLUMNAS ---")
+df_cleaned = df.select(
+    col("a_o").cast("int").alias("anio"),
+    trim(col("departamento")).alias("departamento"),
+    trim(col("c_digo_departamento_divipola")).cast("string").alias("codigo_divipola"),
+    trim(col("sector")).alias("sector"),
+    trim(col("actividad")).alias("actividad"),
+    trim(col("tipo_de_precios")).alias("tipo_precios"),
+    col("valor_miles_de_millones_de").cast("double").alias("valor_pib")) \
+.filter(
+    col("valor_pib").isNotNull() &
+    (col("valor_pib") > 0) &
+    col("departamento").isNotNull()
+).fillna({
+    "sector": "NO ESPECIFICADO",
+    "actividad": "OTRAS ACTIVIDADES"
+})
+
+df_cleaned.show(truncate=False)
+
+df_cleaned.cache() # Persistencia en RAM para acelerar consultas iterativas
+print(f"--- REGISTROS LIMPIOS, LISTOS PARA ANÁLISIS: {df_cleaned.count()} ---")
+
+# Consulta: Filtrar por valor y seleccionar columnas
+print("\n--- DEPARTAMENTOS CON PIB MAYOR A DOS BILLONES DE PESOS ---")
+dpto = df_cleaned.filter(F.col('valor_pib') > 2000).select('valor_pib','departamento','anio','actividad','sector')
+dpto.show()
+
+# Análisis Exploratorio de Datos (EDA) con DataFrames: PIB Total por Departamento
+df_top_dept = df_cleaned.groupBy("departamento") \
+    .agg(
+        _round(_sum("valor_pib"), 2).alias("pib_acumulado_mm")
+    ) \
+    .orderBy(col("pib_acumulado_mm").desc())
+
+print("\n--- TOP DEPARTAMENTOS POR PIB ACUMULADO (DATAFRAMES) ---")
+df_top_dept.show(truncate=False)
+
+# Análisis Explorato"\n--- TOP DEPARTAMENTOS POR PIB ACUMULADO (DATAFRAMES) ---"rio de Datos (EDA) con RDDs: MapReduce por Sector
+# Transformamos el DataFrame limpio en un RDD de pares (Sector, (Conteo=1, Valor_PIB))
+rdd_sector = df_cleaned.rdd.map(
+    lambda row: (row["sector"], (1, row["valor_pib"]))
+)
+
+# Reducción distribuida por clave (reduceByKey) para sumar eventos e inversión en memoria
+rdd_stats_sector = rdd_sector.reduceByKey(
+    lambda a, b: (a[0] + b[0], a[1] + b[1])
+)
+
+stats_sector_list = rdd_stats_sector.collect()
+
+# Impresión de resultados
+print("\n--- CONSOLIDADO POR SECTOR ECONÓMICO (RDD MAPREDUCE) ---")
+for sector, (cant, total_pib) in sorted(rdd_stats_sector.collect(), key=lambda x: x[1][1], reverse=True):
+    print(f"Sector: {sector:<35} | Registros: {cant:<6} | PIB Total: ${total_pib:,.2f} MM COP")
